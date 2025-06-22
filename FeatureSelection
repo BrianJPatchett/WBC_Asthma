@@ -1,0 +1,125 @@
+library(lme4)
+library(pbapply)
+
+cbc_long <- cbc_df %>%
+  pivot_longer(
+    cols      = LYMPH:EOS,     # pivot those five cell‐type columns
+    names_to  = "CellType",   # new column “CellType” will say “EOS”, “NEUT”, etc.
+    values_to = "Count"       # new column “Count” will hold the numeric values
+  ) %>%
+  mutate(
+    Subject  = as.factor(Subject),   # ensure Subject is a factor
+    CellType = as.factor(CellType)   # ensure CellType is a factor
+    # Instance = as.integer(Instance)
+  )
+
+cbc_long <- cbc_long %>%
+  group_by(trait) %>%
+  mutate(
+    logCount = log1p(Count),              # log1p = log(Count + 1), safer for zeros
+    Count_z  = scale(logCount)[, 1]       # standardize log-transformed values
+  ) %>%
+  ungroup()
+
+# Make sure subject and trait are factors
+cbc_long$Subject <- factor(cbc_long$Subject)
+cbc_long$trait   <- factor(cbc_long$trait)
+
+# Make sure 'trait' and 'Subject' are factors
+cbc_long$trait   <- factor(cbc_long$trait)
+cbc_long$Subject <- factor(cbc_long$Subject)
+
+# Fit the multivariate mixed-effects model
+model_nlme <- lme(
+  fixed   = Count_z ~ trait - 1,                          # trait-specific intercepts
+  random  = ~ trait - 1 | Subject,                        # random intercept per trait per subject
+  data    = cbc_long,
+  method  = "REML",
+  control = lmeControl(msMaxIter = 100, opt = "optim")
+)
+
+# Extract the estimated subject-level covariance matrix
+G_nlme <- getVarCov(model_nlme, type = "random.effects")
+print(G_nlme)
+
+# Correlation matrix of subject-level intercepts
+G_cor <- cov2cor(as.matrix(G_nlme))
+print(round(G_cor, 2))
+
+# Function to compute ICC for one trait
+compute_icc <- function(df, trait_name) {
+  df_trait <- df %>% filter(trait == trait_name)
+  
+  # Fit random intercept model
+  model <- lmer(Count_z ~ 1 + (1 | Subject), data = df_trait, REML = TRUE)
+  
+  # Extract variance components
+  var_components <- as.data.frame(VarCorr(model))
+  between_var <- var_components$vcov[var_components$grp == "Subject"]
+  residual_var <- var_components$vcov[var_components$grp == "Residual"]
+  
+  icc <- between_var / (between_var + residual_var)
+  return(data.frame(trait = trait_name, ICC = icc))
+}
+
+# Compute ICCs for each trait
+icc_results <- lapply(levels(cbc_long$trait), function(tr) compute_icc(cbc_long, tr))
+icc_df <- bind_rows(icc_results)
+
+# Plot boxplot of ICCs
+ggplot(icc_df, aes(x = trait, y = ICC)) +
+  geom_col(fill = "steelblue") +
+  ylim(0, 1) +
+  theme_minimal() +
+  labs(title = "Intra-class Correlation (ICC) by Cell Type",
+       x = "Cell Type",
+       y = "ICC (Subject-Level Variance Proportion)")
+
+#Actually, lets include error bars
+
+# Function to compute ICC from a fitted lmer model
+extract_icc <- function(model) {
+  vc <- as.data.frame(VarCorr(model))
+  between <- vc$vcov[vc$grp == "Subject"]
+  residual <- vc$vcov[vc$grp == "Residual"]
+  icc <- between / (between + residual)
+  return(icc)
+}
+bootstrap_icc <- function(df, trait_name, n_boot = 1000) {
+  df_trait <- df %>% filter(trait == trait_name)
+  
+  # Fit base model
+  base_model <- lmer(Count_z ~ 1 + (1 | Subject), data = df_trait, REML = TRUE)
+  
+  # Bootstrap sampling
+  boot_iccs <- pbsapply(1:n_boot, function(i) {
+    sim_data <- unlist(simulate(base_model))
+    df_trait$Count_z_sim <- sim_data
+    sim_model <- lmer(Count_z_sim ~ 1 + (1 | Subject), data = df_trait, REML = TRUE)
+    extract_icc(sim_model)
+  })
+  
+  icc_point <- extract_icc(base_model)
+  icc_ci <- quantile(boot_iccs, probs = c(0.025, 0.975))
+  
+  return(data.frame(
+    trait = trait_name,
+    ICC = icc_point,
+    lower = icc_ci[1],
+    upper = icc_ci[2]
+  ))
+}
+
+# Compute ICCs with CIs for all traits
+traits <- levels(cbc_long$trait)
+icc_bootstrap_df <- bind_rows(lapply(traits, function(tr) bootstrap_icc(cbc_long, tr)))
+
+# Plot with error bars
+ggplot(icc_bootstrap_df, aes(x = trait, y = ICC)) +
+  geom_col(fill = "steelblue", width = 0.6) +
+  geom_errorbar(aes(ymin = lower, ymax = upper), width = 0.2) +
+  ylim(0, 1) +
+  theme_minimal() +
+  labs(title = "Bootstrapped ICCs with 95% Confidence Intervals",
+       x = "Cell Type",
+       y = "Intra-class Correlation (ICC)")
