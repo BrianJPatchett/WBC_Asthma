@@ -1,0 +1,283 @@
+library(MuMIn)
+library(lme4)
+library(dplyr)
+library(parallel)
+library(doParallel)
+library(GGally)
+library(forcats)
+
+data_two <- data_two %>%
+  mutate(
+    EOS   = scale(log1p(EOS)),
+    MONO  = scale(log1p(MONO)),
+    NEUTS = scale(log1p(NEUTS)),
+    BASO  = scale(log1p(BASO)),
+    LYMPH = scale(log1p(LYMPH))
+  )
+full_model <- glmer(
+  EXB ~ (EOS + MONO + NEUTS + BASO + LYMPH)^2 + (1 | PID),
+  data = data_two,
+  family = binomial,
+  control = glmerControl(optimizer = "bobyqa", optCtrl = list(maxfun = 2e5))
+)
+options(na.action = "na.fail")  
+cl <- makeCluster(detectCores() - 1)
+registerDoParallel(cl)
+dredge_results <- dredge(
+  full_model,
+  rank = "AICc",
+  trace = TRUE,
+  subset = (
+    dc("EOS:MONO", "EOS", "MONO") &
+    dc("EOS:NEUTS", "EOS", "NEUTS") &
+    dc("EOS:BASO", "EOS", "BASO") &
+    dc("EOS:LYMPH", "EOS", "LYMPH") &
+    dc("MONO:NEUTS", "MONO", "NEUTS") &
+    dc("MONO:BASO", "MONO", "BASO") &
+    dc("MONO:LYMPH", "MONO", "LYMPH") &
+    dc("NEUTS:BASO", "NEUTS", "BASO") &
+    dc("NEUTS:LYMPH", "NEUTS", "LYMPH") &
+    dc("BASO:LYMPH", "BASO", "LYMPH")
+  )
+)
+stopCluster(cl)
+
+dredge_results
+
+# === STEP 1: Manually define node effects ===
+node_data <- data.frame(
+  name = c("EOS", "LYMPH", "MONO", "NEUTS", "BASO"),
+  effect = c(0.1631, 0.3390, -0.1333, 0.4388, -0.08198)  # coefficients from model
+)
+
+# Assign color based on direction of effect
+node_data$color <- ifelse(node_data$effect > 0, "red", "green")
+node_data$size <- abs(node_data$effect) * 5  # scale to control node size
+
+# === STEP 2: Manually define interaction edges ===
+edge_data <- data.frame(
+  from = c("BASO", "EOS", "EOS", "EOS", "LYMPH", "MONO"),
+  to   = c("LYMPH", "LYMPH", "MONO", "NEUTS", "MONO", "NEUTS"),
+  weight = c(0.4101, 0.5486, -0.6423, 0.4457, 0.2465, 0.02515)
+)
+
+# Edge aesthetics
+edge_data$label <- round(edge_data$weight, 2)
+edge_data$color <- ifelse(edge_data$weight > 0, "red", "green")
+edge_data$width <- abs(edge_data$weight) * 2
+
+# === STEP 3: Build and plot the graph ===
+graph <- tbl_graph(nodes = node_data, edges = edge_data, directed = FALSE)
+
+edge_data$layout_weight <- abs(edge_data$weight)
+
+ggraph(graph, layout = "fr", weights = layout_weight) +  # or use "circle" for radial layout
+  geom_edge_link(aes(width = width, color = color, label = label), 
+                 show.legend = FALSE, label_size = 3) +
+  geom_node_point(aes(size = size, color = color), show.legend = FALSE) +
+  geom_node_text(aes(label = name), vjust = 1.5, size = 5) +
+  scale_color_identity() +
+  scale_edge_color_identity() +
+  theme_void() +
+  ggtitle("Immune Cell Effects and Interactions on Exacerbation Risk")
+
+
+
+plot_interaction_heatmap <- function(model, data, var1, var2,
+                                     n = 100,
+                                     transform = log1p,
+                                     scale_vars = TRUE,
+                                     other_fixed = "mean") {
+  
+  message("Generating prediction grid for ", var1, " × ", var2)
+  
+  # Extract variable names used in model
+  vars_in_model <- all.vars(formula(model))
+  response_var <- as.character(formula(model)[[2]])
+  fixed_vars <- setdiff(vars_in_model, c(response_var, "ID"))
+  
+  # Grid for var1 and var2
+  var1_seq <- seq(max(0, min(data[[var1]], na.rm = TRUE)),
+                  max(data[[var1]], na.rm = TRUE),
+                  length.out = n)
+  
+  var2_seq <- seq(max(0, min(data[[var2]], na.rm = TRUE)),
+                  max(data[[var2]], na.rm = TRUE),
+                  length.out = n)
+  
+  grid <- expand.grid(
+    var1_seq,
+    var2_seq
+  )
+  names(grid) <- c(var1, var2)
+  
+  # Add other fixed variables at their mean
+  for (v in setdiff(fixed_vars, c(var1, var2))) {
+    grid[[v]] <- if (other_fixed == "mean") mean(data[[v]], na.rm = TRUE) else 0
+  }
+  
+  # Apply log1p if requested
+  if (!is.null(transform)) {
+    for (v in intersect(names(grid), fixed_vars)) {
+      grid[[v]] <- suppressWarnings(log1p(pmax(grid[[v]], -1)))
+    }
+  }
+  
+  # Apply scaling if requested
+  if (scale_vars) {
+    for (v in intersect(names(grid), fixed_vars)) {
+      mu <- mean(data[[v]], na.rm = TRUE)
+      sd_ <- sd(data[[v]], na.rm = TRUE)
+      grid[[v]] <- (grid[[v]] - mu) / sd_
+    }
+  }
+  
+  # Add ID column if model includes random intercept
+  if ("ID" %in% names(model@frame)) {
+    grid$ID <- NA
+  }
+  
+  # Predict
+  grid$pred <- tryCatch({
+    predict(model, newdata = grid, type = "response", re.form = NA)
+  }, error = function(e) {
+    message("Prediction failed: ", e$message)
+    return(rep(NA, nrow(grid)))
+  })
+  
+  # Check for prediction failure
+  if (all(is.na(grid$pred))) {
+    stop("Prediction failed or returned only NAs. Check model variables or transformation issues.")
+  }
+  
+  # Return plot
+  message("Prediction successful. Plotting...")
+  
+  return(
+    ggplot(grid, aes_string(x = var1, y = var2, fill = "pred")) +
+      geom_tile() +
+      scale_fill_viridis_c(name = "P(Exacerbation)") +
+      labs(
+        title = paste("Predicted Risk:", var1, "×", var2),
+        x = var1,
+        y = var2
+      ) +
+      theme_minimal()
+  )
+}
+
+bootstrap_glmm <- function(data, formula, group_var = "PID", n_boot = 1000) {
+  coefs <- list()
+  
+  for (i in 1:n_boot) {
+    # Sample IDs with replacement
+    sampled_ids <- sample(unique(data[[group_var]]), replace = TRUE)
+    resampled_data <- sampled_ids %>%
+      lapply(function(id) data[data[[group_var]] == id, ]) %>%
+      bind_rows()
+    
+    # Try fitting the model, skip if error or convergence issue
+    model <- try(suppressWarnings(
+      glmer(formula, data = resampled_data, family = binomial, 
+            control = glmerControl(optimizer = "bobyqa"))
+    ), silent = TRUE)
+    
+    # Only collect results if successful and log-likelihood is finite
+    if (!inherits(model, "try-error") && is.finite(logLik(model))) {
+      beta <- fixef(model)
+      # Store as tibble with names preserved
+      coefs[[i]] <- tibble(term = names(beta), estimate = beta)
+    }
+  }
+  
+  # Combine into long dataframe
+  coef_df <- bind_rows(coefs, .id = "bootstrap")
+  coef_df$bootstrap <- as.integer(coef_df$bootstrap)
+  
+  return(coef_df)
+}
+
+cl <- makeCluster(detectCores() - 1)
+registerDoParallel(cl)
+
+boot_results <- bootstrap_glmm(
+  data = data_two,
+  formula = EXB ~ BASO + EOS + LYMPH + MONO + NEUTS + 
+    BASO:LYMPH + EOS:LYMPH + EOS:MONO + EOS:NEUTS + LYMPH:MONO + MONO:NEUTS +
+    (1 + EOS | PID),
+  n_boot = 500  
+)
+stopCluster(cl)
+
+
+boot_results %>%
+  group_by(term) %>%
+  summarise(
+    lower = quantile(estimate, 0.025),
+    upper = quantile(estimate, 0.975),
+    median = median(estimate)
+  )
+boot_results %>%
+  filter(!is.na(term)) %>%
+  ggplot(aes(x = estimate, fill = term)) +
+  geom_density(alpha = 0.6, color = "black") +
+  facet_wrap(~ term, scales = "free", ncol = 3) +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  labs(
+    title = "Bootstrapped Coefficient Distributions (GLMM)",
+    x = "Coefficient Estimate",
+    y = "Density"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+# Convert to wide format: one row per bootstrap
+boot_wide <- boot_results %>%
+  pivot_wider(names_from = term, values_from = estimate)
+
+# Optional: remove rows with NAs (from failed fits)
+boot_wide <- na.omit(boot_wide)
+
+# Plot pairwise distributions and correlations
+ggpairs(boot_wide,
+        title = "Pairwise Bootstrapped Coefficient Distributions",
+        lower = list(continuous = "smooth"),
+        diag = list(continuous = "densityDiag"),
+        upper = list(continuous = "cor"))
+
+
+boot_summary <- boot_results %>%
+  group_by(term) %>%
+  summarise(sd = sd(estimate), .groups = "drop")
+
+ggplot(boot_summary, aes(x = reorder(term, sd), y = sd)) +
+  geom_col(fill = "steelblue") +
+  coord_flip() +
+  labs(title = "Bootstrapped Coefficient Variability", x = "Term", y = "SD of Estimate") +
+  theme_minimal()
+
+# Summarize 95% credible intervals
+ci_summary <- boot_results %>%
+  group_by(term) %>%
+  summarize(
+    CI_lower = quantile(estimate, 0.025),
+    Median = median(estimate),
+    CI_upper = quantile(estimate, 0.975),
+    .groups = "drop"
+  )
+
+# Order terms by median effect size for visual clarity
+ci_summary <- ci_summary %>%
+  mutate(term = fct_reorder(term, Median))
+
+# Plotting
+ggplot(ci_summary, aes(x = Median, y = term)) +
+  geom_point(color = "black") +
+  geom_errorbarh(aes(xmin = CI_lower, xmax = CI_upper), height = 0.3, color = "blue", alpha = 0.7) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "red") +
+  labs(
+    title = "Bayesian Credible Intervals (95%) for GLMM Coefficients",
+    x = "Coefficient Estimate",
+    y = "Term"
+  ) +
+  theme_minimal()
