@@ -1,0 +1,181 @@
+# Packages
+library(ggplot2)
+library(glue)
+library(stringr)
+
+# Where to save the images
+out_dir <- getwd()         # or set to a path you like, e.g. "slides/frames"
+dpi <- 200
+w <- 9; h <- 5             # inches
+
+# A minimalist theme for big equations
+theme_slide <- function() {
+  theme_void(base_size = 22) +
+    theme(
+      plot.margin = margin(30, 30, 30, 30),
+      plot.title  = element_text(face = "bold", hjust = 0.02, size = 24)
+    )
+}
+
+# Helper to draw one frame with a main equation and (optionally) a highlighted line underneath
+make_frame <- function(title, eq_main, highlight = NULL, idx) {
+  df_eq <- data.frame(
+    x = c(0.02, 0.02),
+    y = c(0.70, 0.38),
+    text = c(eq_main, highlight %||% "")
+  )
+  
+  # small message at the bottom
+  df_msg <- data.frame(
+    x = 0.02,
+    y = 0.20,
+    text = "For this model: fit to data and compute AICc."
+  )
+  
+  p <- ggplot() +
+    # grey bar = model space; blue fill = how far we've “walked” so far
+    geom_rect(aes(xmin = 0.02, xmax = 0.98, ymin = 0.08, ymax = 0.14),
+              fill = "#e6e6e6") +
+    geom_rect(aes(xmin = 0.02, xmax = 0.02 + 0.96 * (idx / 6),
+                  ymin = 0.08, ymax = 0.14),
+              fill = "#4c78a8") +
+    # main equation
+    geom_text(
+      data = df_eq[1, ], aes(x, y, label = text),
+      family = "sans", fontface = "bold", size = 9, hjust = 0, color = "black"
+    ) +
+    # bottom message
+    geom_text(
+      data = df_msg, aes(x, y, label = text),
+      family = "sans", size = 5, hjust = 0, color = "grey20"
+    ) +
+    labs(title = title) +
+    coord_cartesian(xlim = c(0,1), ylim = c(0,1), expand = FALSE) +
+    theme_slide()
+  
+  # optional red highlight line (new term)
+  if (!is.null(highlight)) {
+    p <- p +
+      geom_text(
+        data = df_eq[2, ], aes(x, y, label = text),
+        family = "sans", fontface = "bold", size = 8,
+        hjust = 0, color = "#d62728"
+      )
+  }
+  
+  ggsave(
+    filename = file.path(out_dir,
+                         glue::glue("frame_{stringr::str_pad(idx,2,'left','0')}.png")),
+    plot = p, width = w, height = h, dpi = dpi
+  )
+}
+# --------- Define the sequence of frames ----------
+# --------- Updated Frames (linear models only, β notation) ----------
+
+# 1) Null model
+make_frame(
+  title = "Start: Null (Intercept-only) Model",
+  eq_main = "y = β[0]",
+  highlight = NULL,
+  idx = 1
+)
+
+# 2) Add first predictor
+make_frame(
+  title = "Consider First Predictor",
+  eq_main = "y = β[0] + β[1] * x[1]",
+  highlight = "New term:  β[1] * x[1]",
+  idx = 2
+)
+
+# 3) Add second predictor
+make_frame(
+  title = "Add Second Predictor",
+  eq_main = "y = β[0] + β[1] * x[1] + β[2] * x[2]",
+  highlight = "New term:  β[2] * x[2]",
+  idx = 3
+)
+
+# 4) Add third predictor
+make_frame(
+  title = "Second Predictor Alone",
+  eq_main = "y = β[0] + β[2] * x[2]",
+  highlight = "New term:  β[2] * x[2]",
+  idx = 4
+)
+
+# 5) All-subsets idea (key concept)
+make_frame(
+  title = "All-Subsets Regression",
+  eq_main = "y = β[0] + Σ β[i] * x[i]   (any subset of predictors)",
+  highlight = "Compare all models using AICc.",
+  idx = 5
+)
+
+# 6) Interaction (optional depending on your talk)
+make_frame(
+  title = "Add Pairwise Interactions",
+  eq_main = "y = β[0] + Σ β[i] * x[i] + β[1,2] * x[1] * x[2]",
+  highlight = "Interaction term: β[1,2] * x[1] * x[2]",
+  idx = 6
+)
+
+# 7) “Full” model (linear)
+make_frame(
+  title = "A Step Further: Add pairwise interactions",
+  eq_main = "y = β[0]  
+           + (main effects)     Σ β[i] x[i]  
+           + (interactions)     Σ Σ β[i,j] x[i] x[j]",
+  highlight = "Consider all possible models (AICc picks winner).",
+  idx = 7
+)
+
+library(ggplot2)
+library(dplyr)
+
+# Example candidate models & AICc values (replace with real ones)
+aicc_df <- tibble::tibble(
+  step = 0:6,
+  label = c(
+    "M0: β0",
+    "M1: β0 + β1 x1",
+    "M2: β0 + β1 x1 + β2 x2",
+    "M3: β0 + β1 x1 + β2 x2 + β3 x3",
+    "M4: + interaction",
+    "M5: + another predictor",
+    "M6: full model"
+  ),
+  AICc = c(410, 395, 398, 392, 399, 388, 391)  # toy example
+) %>%
+  mutate(
+    step_factor = factor(step),
+    is_best = AICc == min(AICc)
+  )
+
+p_aicc <- ggplot(aicc_df, aes(x = step, y = AICc)) +
+  geom_line() +
+  geom_point(size = 3, color = "black") +
+  geom_point(data = subset(aicc_df, is_best),
+             size = 4, color = "green4") +
+  geom_text(
+    data = subset(aicc_df, is_best),
+    aes(label = "Lowest AICc → selected model"),
+    vjust = -1, hjust = 0.5, size = 4.5, color = "green4"
+  ) +
+  scale_x_continuous(
+    breaks = aicc_df$step,
+    labels = aicc_df$step
+  ) +
+  labs(
+    title = "All-Subsets Regression: Rank Models by AICc",
+    x = "Model (increasing complexity)",
+    y = "AICc"
+  ) +
+  theme_minimal(base_size = 16) +
+  theme(
+    plot.title = element_text(face = "bold"),
+    panel.grid.minor = element_blank()
+  )
+
+ggsave(file.path(out_dir, "frame_08_AICc_ranking.png"),
+       p_aicc, width = 9, height = 5, dpi = 200)
