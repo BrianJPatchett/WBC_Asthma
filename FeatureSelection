@@ -8,8 +8,8 @@ cbc_long <- cbc_df %>%
     values_to = "Count"       # new column “Count” will hold the numeric values
   ) %>%
   mutate(
-    Subject  = as.factor(Subject),   # ensure Subject is a factor
-    CellType = as.factor(CellType)   # ensure CellType is a factor
+    Subject  = as.factor(Subject),   
+    CellType = as.factor(CellType)   
     # Instance = as.integer(Instance)
   )
 
