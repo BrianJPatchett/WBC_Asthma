@@ -4,7 +4,7 @@ library(glue)
 library(stringr)
 
 # Where to save the images
-out_dir <- getwd()         # or set to a path you like, e.g. "slides/frames"
+out_dir <- getwd()         
 dpi <- 200
 w <- 9; h <- 5             # inches
 
@@ -17,7 +17,7 @@ theme_slide <- function() {
     )
 }
 
-# Helper to draw one frame with a main equation and (optionally) a highlighted line underneath
+# Helper to draw one frame with a main equation 
 make_frame <- function(title, eq_main, highlight = NULL, idx) {
   df_eq <- data.frame(
     x = c(0.02, 0.02),
@@ -133,7 +133,7 @@ make_frame(
 library(ggplot2)
 library(dplyr)
 
-# Example candidate models & AICc values (replace with real ones)
+# Example candidate models & AICc values 
 aicc_df <- tibble::tibble(
   step = 0:6,
   label = c(
