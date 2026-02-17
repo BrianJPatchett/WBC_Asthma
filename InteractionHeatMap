@@ -4,7 +4,6 @@ plot_interaction_heatmap <- function(model, data, var1, var2,
                                      scale_vars = TRUE,
                                      other_fixed = "mean") {
   
-  message("Generating prediction grid for ", var1, " × ", var2)
   
   # Extract variable names used in model
   vars_in_model <- all.vars(formula(model))
@@ -31,14 +30,12 @@ plot_interaction_heatmap <- function(model, data, var1, var2,
     grid[[v]] <- if (other_fixed == "mean") mean(data[[v]], na.rm = TRUE) else 0
   }
   
-  # Apply log1p if requested
   if (!is.null(transform)) {
     for (v in intersect(names(grid), fixed_vars)) {
       grid[[v]] <- suppressWarnings(log1p(pmax(grid[[v]], -1)))
     }
   }
   
-  # Apply scaling if requested
   if (scale_vars) {
     for (v in intersect(names(grid), fixed_vars)) {
       mu <- mean(data[[v]], na.rm = TRUE)
@@ -65,9 +62,6 @@ Prediction failed: ", e$message)
   if (all(is.na(grid$pred))) {
     stop("Prediction failed or returned only NAs. Check model variables or transformation issues.")
   }
-  
-  # Return plot
-  message("Prediction successful. Plotting...")
   
   return(
     ggplot(grid, aes_string(x = var1, y = var2, fill = "pred")) +
