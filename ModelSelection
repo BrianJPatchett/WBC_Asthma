@@ -88,9 +88,7 @@ plot_interaction_heatmap <- function(model, data, var1, var2,
                                      transform = log1p,
                                      scale_vars = TRUE,
                                      other_fixed = "mean") {
-  
-  message("Generating prediction grid for ", var1, " × ", var2)
-  
+    
   # Extract variable names used in model
   vars_in_model <- all.vars(formula(model))
   response_var <- as.character(formula(model)[[2]])
@@ -149,10 +147,7 @@ plot_interaction_heatmap <- function(model, data, var1, var2,
   if (all(is.na(grid$pred))) {
     stop("Prediction failed or returned only NAs. Check model variables or transformation issues.")
   }
-  
-  # Return plot
-  message("Prediction successful. Plotting...")
-  
+    
   return(
     ggplot(grid, aes_string(x = var1, y = var2, fill = "pred")) +
       geom_tile() +
